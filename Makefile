@@ -1,13 +1,14 @@
 TARGET := iphone:clang:latest:15.0
 ARCHS = arm64
-INSTALL_TARGET_PROCESSES = SpringBoard
 THEOS_PACKAGE_SCHEME = rootless
 
 include $(THEOS)/makefiles/common.mk
 
-TWEAK_NAME = MaltegoAI
+APPLICATION_NAME = MaltegoAI
 
-MaltegoAI_FILES = Tweak.x
+MaltegoAI_FILES = main.m
+MaltegoAI_FRAMEWORKS = UIKit AVFoundation Speech NaturalLanguage
 MaltegoAI_CFLAGS = -fobjc-arc
+MaltegoAI_CODESIGN_FLAGS = -Sentitlements.plist
 
-include $(THEOS_MAKE_PATH)/tweak.mk
+include $(THEOS_MAKE_PATH)/application.mk
