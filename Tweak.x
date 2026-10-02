@@ -137,11 +137,14 @@ static NSArray *installedApps(void) {
     return out;
 }
 
+// ИСПРАВЛЕНО: iOS 16 возвращает "нет" даже при успешном запуске,
+// поэтому ответ функции игнорируем.
 static BOOL openBundleID(NSString *bid) {
     id ws = callIfExists(NSClassFromString(@"LSApplicationWorkspace"), @"defaultWorkspace");
     SEL sel = NSSelectorFromString(@"openApplicationWithBundleID:");
     if (!ws || ![ws respondsToSelector:sel]) return NO;
-    return ((BOOL (*)(id, SEL, id))objc_msgSend)(ws, sel, bid);
+    (void)((BOOL (*)(id, SEL, id))objc_msgSend)(ws, sel, bid);
+    return YES;
 }
 
 static NSArray *rankApps(NSString *query, NSArray *apps) {
