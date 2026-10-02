@@ -1,9 +1,0 @@
-Package: com.curvaplayer.maltegoai
-Name: Maltego AI
-Depends: mobilesubstrate
-Version: 0.0.1
-Architecture: iphoneos-arm
-Description: Voice assistant tweak
-Maintainer: Curva-player
-Author: Curva-player
-Section: Tweaks
