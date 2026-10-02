@@ -26,6 +26,7 @@ static NSString *trim(NSString *s) {
 }
 
 static void showReply(NSString *msg) {
+    if (bridgeSpeak(msg)) return;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
         CFUserNotificationDisplayNotice(
             4.0, kCFUserNotificationNoteAlertLevel, NULL, NULL, NULL,
