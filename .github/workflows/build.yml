@@ -1,0 +1,23 @@
+name: Build
+on:
+  push:
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Randomblock1/theos-action@v1
+      - name: Build
+        run: make package FINALPACKAGE=1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MaltegoAI-deb
+          path: packages/*.deb
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: Build ${{ github.run_number }}
+          files: packages/*.deb
