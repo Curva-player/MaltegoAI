@@ -4,6 +4,9 @@
 
 #define STORE_DIR @"/var/mobile/Library/MaltegoAI"
 #define ALIAS_FILE @"/var/mobile/Library/MaltegoAI/aliases.plist"
+#define CONFIG_FILE @"/var/mobile/Library/MaltegoAI/config.plist"
+
+static NSString *gBrainNote = nil;
 
 #pragma mark - Утилиты
 
@@ -59,7 +62,7 @@ static BOOL doPower(BOOL reboot) {
     return callBool(fbs, @"shutdownAndReboot:", reboot);
 }
 
-#pragma mark - Память (чему твик научился)
+#pragma mark - Память и настройки
 
 static NSMutableDictionary *loadAliases(void) {
     NSMutableDictionary *d = [NSMutableDictionary dictionaryWithContentsOfFile:ALIAS_FILE];
@@ -73,6 +76,21 @@ static void saveAlias(NSString *key, NSString *bundleID) {
     NSMutableDictionary *d = loadAliases();
     d[key] = bundleID;
     [d writeToFile:ALIAS_FILE atomically:YES];
+}
+
+static NSMutableDictionary *loadConfig(void) {
+    NSMutableDictionary *d = [NSMutableDictionary dictionaryWithContentsOfFile:CONFIG_FILE];
+    return d ?: [NSMutableDictionary dictionary];
+}
+
+static void saveConfigValue(NSString *key, NSString *value) {
+    [[NSFileManager defaultManager] createDirectoryAtPath:STORE_DIR
+                              withIntermediateDirectories:YES attributes:nil error:nil];
+    NSMutableDictionary *d = loadConfig();
+    d[key] = value;
+    [d writeToFile:CONFIG_FILE atomically:YES];
+    [[NSFileManager defaultManager] setAttributes:@{NSFilePosixPermissions: @0600}
+                                     ofItemAtPath:CONFIG_FILE error:nil];
 }
 
 #pragma mark - Поиск приложений
@@ -98,7 +116,7 @@ static NSDictionary *expansions(void) {
         @"utub": @[@"youtube"], @"iutub": @[@"youtube"],
         @"vatsap": @[@"whatsapp"], @"votsap": @[@"whatsapp"], @"vatsapp": @[@"whatsapp"],
         @"insta": @[@"instagram"], @"instagram": @[@"instagram"],
-        @"tiktok": @[@"tiktok"], @"tiktok": @[@"tiktok"],
+        @"tiktok": @[@"tiktok"],
         @"vaiber": @[@"viber"],
         @"kamera": @[@"camera"], @"pocta": @[@"mail"], @"pochta": @[@"mail"],
         @"karty": @[@"maps"], @"zametki": @[@"notes"], @"nastroiki": @[@"settings", @"preferences"]
@@ -188,7 +206,7 @@ static void askText(NSString *message, NSString *okTitle, void (^done)(NSString 
     });
 }
 
-#pragma mark - Команды
+#pragma mark - Приложения: открыть и научиться
 
 static void openByName(NSString *name) {
     NSString *nq = norm(name);
@@ -240,6 +258,205 @@ static void teach(NSString *left, NSString *right) {
     showReply([NSString stringWithFormat:@"Запомнил: %@ → %@", left, res[0][@"name"]]);
 }
 
+#pragma mark - Очистка кэша
+
+static unsigned long long dirSize(NSString *path) {
+    unsigned long long total = 0;
+    NSDirectoryEnumerator *e = [[NSFileManager defaultManager] enumeratorAtPath:path];
+    NSString *f;
+    while ((f = [e nextObject])) {
+        total += [[e fileAttributes] fileSize];
+    }
+    return total;
+}
+
+static long long clearCaches(void) {
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSString *root = @"/var/mobile/Containers/Data/Application";
+    NSArray *containers = [fm contentsOfDirectoryAtPath:root error:nil];
+    if (containers.count == 0) return -1;
+    long long freed = 0;
+    for (NSString *c in containers) {
+        for (NSString *sub in @[@"Library/Caches", @"tmp"]) {
+            NSString *dir = [[root stringByAppendingPathComponent:c] stringByAppendingPathComponent:sub];
+            NSArray *items = [fm contentsOfDirectoryAtPath:dir error:nil];
+            for (NSString *it in items) {
+                if ([it isEqualToString:@"Snapshots"] || [it hasPrefix:@"com.apple."]) continue;
+                NSString *p = [dir stringByAppendingPathComponent:it];
+                BOOL isDir = NO;
+                [fm fileExistsAtPath:p isDirectory:&isDir];
+                unsigned long long sz = isDir ? dirSize(p) : [[fm attributesOfItemAtPath:p error:nil] fileSize];
+                if ([fm removeItemAtPath:p error:nil]) freed += (long long)sz;
+            }
+        }
+    }
+    return freed;
+}
+
+static void doClear(BOOL thenRespring) {
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        long long freed = clearCaches();
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (freed < 0) { showReply(@"Нет доступа к кэшу приложений"); return; }
+            NSString *m = [NSString stringWithFormat:@"Готово. Освобождено: %.1f МБ", freed / 1048576.0];
+            if (thenRespring) {
+                showReply([m stringByAppendingString:@". Делаю респринг"]);
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{ doRespring(); });
+            } else {
+                showReply(m);
+            }
+        });
+    });
+}
+
+#pragma mark - Выполнение действий
+
+static void runAction(NSString *action, NSString *arg, NSString *say) {
+    if ([action isEqualToString:@"open_app"]) {
+        openByName(arg);
+    } else if ([action isEqualToString:@"respring"]) {
+        showReply(say.length ? say : @"Делаю респринг");
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{ doRespring(); });
+    } else if ([action isEqualToString:@"reboot"]) {
+        showReply(say.length ? say : @"Перезагружаю телефон");
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+            if (!doPower(YES)) showReply(@"Не получилось перезагрузить");
+        });
+    } else if ([action isEqualToString:@"shutdown"]) {
+        showReply(say.length ? say : @"Выключаю телефон");
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+            if (!doPower(NO)) showReply(@"Не получилось выключить");
+        });
+    } else if ([action isEqualToString:@"clear_cache"]) {
+        showReply(say.length ? say : @"Чищу кэш");
+        doClear(NO);
+    } else if ([action isEqualToString:@"optimize"]) {
+        showReply(say.length ? say : @"Оптимизирую телефон");
+        doClear(YES);
+    } else if ([action isEqualToString:@"set_name"]) {
+        if (arg.length) saveConfigValue(@"name", arg);
+        showReply(say.length ? say : @"Запомнил имя");
+    } else {
+        showReply(say.length ? say : @"Не понял команду");
+    }
+}
+
+#pragma mark - Мозг (Groq)
+
+static NSDictionary *extractJSON(NSString *s) {
+    NSRange a = [s rangeOfString:@"{"];
+    NSRange b = [s rangeOfString:@"}" options:NSBackwardsSearch];
+    if (a.location == NSNotFound || b.location == NSNotFound || b.location < a.location) return nil;
+    NSString *sub = [s substringWithRange:NSMakeRange(a.location, b.location - a.location + 1)];
+    id o = [NSJSONSerialization JSONObjectWithData:[sub dataUsingEncoding:NSUTF8StringEncoding] options:0 error:nil];
+    return [o isKindOfClass:[NSDictionary class]] ? o : nil;
+}
+
+static void askBrain(NSString *userText, void (^ok)(NSDictionary *), void (^fail)(NSString *)) {
+    NSDictionary *cfg = loadConfig();
+    NSString *key = cfg[@"groq_key"];
+    if (key.length == 0) { fail(nil); return; }
+    NSString *model = cfg[@"model"] ?: @"llama-3.3-70b-versatile";
+    NSString *name = cfg[@"name"] ?: @"unknown";
+
+    NSMutableArray *names = [NSMutableArray array];
+    for (NSDictionary *a in installedApps()) {
+        if (![names containsObject:a[@"name"]]) [names addObject:a[@"name"]];
+        if (names.count >= 300) break;
+    }
+    NSString *appsList = [names componentsJoinedByString:@"; "];
+
+    NSString *sys = [NSString stringWithFormat:
+        @"You are Maltego, a voice assistant living inside the user's jailbroken iPhone. "
+        @"Reply with ONE JSON object and nothing else: "
+        @"{\"action\": \"<open_app|respring|reboot|shutdown|clear_cache|optimize|set_name|chat>\", "
+        @"\"arg\": \"<string or empty>\", \"say\": \"<short reply in the SAME language as the user's command, max 100 characters>\"}. "
+        @"Rules: open_app: arg = the exact app name taken from the INSTALLED APPS list below "
+        @"(understand nicknames, abbreviations and other languages, for example a short word for Telegram means the Telegram app in the list). "
+        @"If no app fits, use chat and say you could not find it. "
+        @"respring = restart the UI, reboot = restart the phone, shutdown = power off, "
+        @"clear_cache = delete app caches, optimize = clear caches and refresh the system so the phone runs faster, "
+        @"set_name: arg = the name the user wants to be called. "
+        @"chat: anything else (questions, small talk, unsupported requests); answer briefly in say. "
+        @"Never invent apps. Output only the JSON. The user's name: %@. INSTALLED APPS: %@",
+        name, appsList];
+
+    NSDictionary *body = @{
+        @"model": model, @"temperature": @0, @"max_tokens": @200,
+        @"messages": @[@{@"role": @"system", @"content": sys},
+                       @{@"role": @"user", @"content": userText}]
+    };
+    NSData *data = [NSJSONSerialization dataWithJSONObject:body options:0 error:nil];
+    NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:
+        [NSURL URLWithString:@"https://api.groq.com/openai/v1/chat/completions"]];
+    req.HTTPMethod = @"POST";
+    req.timeoutInterval = 12;
+    [req setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
+    [req setValue:[@"Bearer " stringByAppendingString:key] forHTTPHeaderField:@"Authorization"];
+    req.HTTPBody = data;
+
+    [[[NSURLSession sharedSession] dataTaskWithRequest:req
+        completionHandler:^(NSData *d, NSURLResponse *r, NSError *e) {
+        NSDictionary *plan = nil;
+        NSString *why = nil;
+        NSInteger code = [r isKindOfClass:[NSHTTPURLResponse class]] ? [(NSHTTPURLResponse *)r statusCode] : 0;
+        if (e || !d) {
+            why = @"нет сети";
+        } else if (code == 401) {
+            why = @"ключ не подошёл (401)";
+        } else if (code == 429) {
+            why = @"лимит запросов (429)";
+        } else if (code != 200) {
+            why = [NSString stringWithFormat:@"ошибка %ld", (long)code];
+        } else {
+            id j = [NSJSONSerialization JSONObjectWithData:d options:0 error:nil];
+            NSString *content = nil;
+            if ([j isKindOfClass:[NSDictionary class]]) {
+                NSArray *ch = j[@"choices"];
+                if ([ch isKindOfClass:[NSArray class]] && ch.count > 0) {
+                    id m = ch[0][@"message"];
+                    if ([m isKindOfClass:[NSDictionary class]]) content = m[@"content"];
+                }
+            }
+            if ([content isKindOfClass:[NSString class]]) plan = extractJSON(content);
+            if (!plan) why = @"странный ответ нейросети";
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (plan) ok(plan); else fail(why);
+        });
+    }] resume];
+}
+
+static void runPlan(NSDictionary *plan) {
+    NSString *action = [plan[@"action"] isKindOfClass:[NSString class]] ? plan[@"action"] : @"chat";
+    NSString *arg = [plan[@"arg"] isKindOfClass:[NSString class]] ? plan[@"arg"] : @"";
+    NSString *say = [plan[@"say"] isKindOfClass:[NSString class]] ? plan[@"say"] : @"";
+    runAction(action, arg, say);
+}
+
+#pragma mark - Команды без нейросети (запасной вариант)
+
+static void localCommand(NSString *rest) {
+    if ([rest containsString:@"респринг"] || [rest containsString:@"respring"]) { runAction(@"respring", @"", @""); return; }
+    if ([rest containsString:@"перезагруз"] || [rest containsString:@"reboot"] || [rest containsString:@"restart"]) { runAction(@"reboot", @"", @""); return; }
+    if ([rest isEqualToString:@"выключи"] ||
+        ([rest hasPrefix:@"выключи"] && ([rest containsString:@"телефон"] || [rest containsString:@"айфон"])) ||
+        [rest containsString:@"shutdown"] || [rest containsString:@"power off"]) { runAction(@"shutdown", @"", @""); return; }
+    if ([rest containsString:@"оптимиз"] || [rest containsString:@"optimi"]) { runAction(@"optimize", @"", @""); return; }
+    if ([rest containsString:@"кэш"] || [rest containsString:@"кеш"] || [rest containsString:@"cache"] ||
+        [rest hasPrefix:@"почисти"] || [rest hasPrefix:@"очисти"]) { runAction(@"clear_cache", @"", @""); return; }
+    for (NSString *p in @[@"открой ", @"зайди в ", @"зайди на ", @"запусти ", @"open "]) {
+        if ([rest hasPrefix:p]) {
+            openByName(trim([rest substringFromIndex:p.length]));
+            return;
+        }
+    }
+    NSString *note = gBrainNote.length ? [NSString stringWithFormat:@" (%@)", gBrainNote] : @"";
+    showReply([@"Не понял команду" stringByAppendingString:note]);
+}
+
+#pragma mark - Главный обработчик
+
 static void handleCommand(NSString *raw) {
     NSString *t = trim([raw lowercaseString]);
 
@@ -249,22 +466,17 @@ static void handleCommand(NSString *raw) {
     }
     if (!rest) return; // нет слова Maltego: молчим и ничего не делаем
 
-    if ([rest containsString:@"респринг"] || [rest containsString:@"respring"]) {
-        showReply(@"Делаю респринг");
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{ doRespring(); });
+    if (rest.length == 0) {
+        NSString *name = loadConfig()[@"name"];
+        showReply(name.length ? [NSString stringWithFormat:@"Слушаю, %@", name] : @"Слушаю");
         return;
     }
-    if ([rest containsString:@"перезагруз"] || [rest containsString:@"reboot"] || [rest containsString:@"restart"]) {
-        showReply(@"Перезагружаю телефон");
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
-            if (!doPower(YES)) showReply(@"Не получилось перезагрузить");
-        });
-        return;
-    }
-    if ([rest hasPrefix:@"выключи"] || [rest containsString:@"shutdown"] || [rest containsString:@"power off"]) {
-        showReply(@"Выключаю телефон");
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
-            if (!doPower(NO)) showReply(@"Не получилось выключить");
+    if ([rest hasPrefix:@"ключ"] || [rest hasPrefix:@"key"]) {
+        askText(@"Вставь API-ключ Groq (начинается с gsk_)", @"Сохранить", ^(NSString *k) {
+            NSString *key = trim(k);
+            if (key.length < 10) { showReply(@"Ключ не сохранён: слишком короткий"); return; }
+            saveConfigValue(@"groq_key", key);
+            showReply(@"Ключ сохранён");
         });
         return;
     }
@@ -286,13 +498,19 @@ static void handleCommand(NSString *raw) {
         showReply(@"Скажи так: запомни тг = название приложения");
         return;
     }
-    for (NSString *p in @[@"открой ", @"зайди в ", @"зайди на ", @"запусти ", @"open "]) {
-        if ([rest hasPrefix:p]) {
-            openByName(trim([rest substringFromIndex:p.length]));
-            return;
-        }
+
+    NSString *key = loadConfig()[@"groq_key"];
+    if (key.length == 0) {
+        localCommand(rest);
+        return;
     }
-    showReply(@"Не понял команду");
+    askBrain(rest, ^(NSDictionary *plan) {
+        runPlan(plan);
+    }, ^(NSString *why) {
+        gBrainNote = why;
+        localCommand(rest);
+        gBrainNote = nil;
+    });
 }
 
 static void showCommandBox(void) {
