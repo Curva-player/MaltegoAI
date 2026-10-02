@@ -1,0 +1,8 @@
+Package: com.curvaplayer.maltegoai.app
+Name: Maltego AI (app)
+Version: 0.1.0
+Architecture: iphoneos-arm
+Description: Maltego AI voice assistant app
+Maintainer: Curva-player
+Author: Curva-player
+Section: Applications
