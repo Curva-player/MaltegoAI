@@ -1,6 +1,7 @@
 #import <UIKit/UIKit.h>
 #import <CoreFoundation/CoreFoundation.h>
 #import <objc/message.h>
+#import "Bridge.h"
 
 #define STORE_DIR @"/var/mobile/Library/MaltegoAI"
 #define ALIAS_FILE @"/var/mobile/Library/MaltegoAI/aliases.plist"
